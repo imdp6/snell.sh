@@ -18,7 +18,7 @@ chmod +x snell.sh
 
 Debian & Ubuntu 用户
 ```
-wget --no-check-certificate -O snell.sh https://raw.githubusercontent.com/scomper/snell.sh/master/snell-port.sh
+wget --no-check-certificate -O snell.sh https://raw.githubusercontent.com/imdp6/snell.sh/refs/heads/master/snell.sh
 chmod +x snell.sh
 ./snell.sh
 ```
