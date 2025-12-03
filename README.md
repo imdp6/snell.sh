@@ -17,7 +17,7 @@ chmod +x snell.sh
 
 卸载方法：
 ```
-wget --no-check-certificate -O uninstall-snell.sh https://github.com/imdp6/snell.sh/blob/master/uninstall-snell.sh
+wget --no-check-certificate -O uninstall-snell.sh https://raw.githubusercontent.com/imdp6/snell.sh/refs/heads/master/uninstall-snell.sh
 chmod +x uninstall-snell.sh
 ./uninstall-snell.sh
 ```
