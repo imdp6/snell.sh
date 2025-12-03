@@ -7,25 +7,16 @@
 
 
 ** 请使用root用户运行 **
-
-Centos & RedHat 用户
+Debian & Ubuntu 用户安装更新
 ```
-wget --no-check-certificate -O snell.sh https://raw.githubusercontent.com/scomper/snell.sh/master/snell.centos-port.sh
-chmod +x snell.sh
-./snell.sh
-```
-
-
-Debian & Ubuntu 用户
-```
-wget --no-check-certificate -O snell.sh https://raw.githubusercontent.com/imdp6/snell.sh/refs/heads/master/snell.sh
+wget --no-check-certificate -O update_snell.sh https://raw.githubusercontent.com/imdp6/snell.sh/refs/heads/master/update_snell.sh
 chmod +x snell.sh
 ./snell.sh
 ```
 
 卸载方法：
 ```
-wget --no-check-certificate -O uninstall-snell.sh https://raw.githubusercontent.com/scomper/snell.sh/master/uninstall-snell.sh
+wget --no-check-certificate -O uninstall-snell.sh https://github.com/imdp6/snell.sh/blob/master/uninstall-snell.sh
 chmod +x uninstall-snell.sh
 ./uninstall-snell.sh
 ```
