@@ -11,7 +11,7 @@
 Debian & Ubuntu 用户安装更新
 ```
 wget --no-check-certificate -O update_snell.sh https://raw.githubusercontent.com/imdp6/snell.sh/refs/heads/master/update_snell.sh
-chmod +x snell.sh
+chmod +x update_snell.sh
 ./snell.sh
 ```
 
