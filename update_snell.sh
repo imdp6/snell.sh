@@ -12,6 +12,12 @@ SNELL_PSK="${SNELL_PSK:-}"
 SNELL_IPV6="${SNELL_IPV6:-}"
 SNELL_STACK="${SNELL_STACK:-auto}"
 SNELL_LISTEN="${SNELL_LISTEN:-}"
+SNELL_SHA256="${SNELL_SHA256:-}"
+SNELL_SHA256_URL="${SNELL_SHA256_URL:-}"
+SNELL_REINIT="${SNELL_REINIT:-0}"
+SNELL_BACKUP="${SNELL_BACKUP:-0}"
+SNELL_NONINTERACTIVE="${SNELL_NONINTERACTIVE:-0}"
+ASSUME_YES="${ASSUME_YES:-0}"
 CONF_DIR="/etc/snell"
 CONF_FILE="${CONF_DIR}/snell-server.conf"
 SYSTEMD_FILE="/etc/systemd/system/snell.service"
@@ -26,6 +32,88 @@ PLAIN="\033[0m"
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "${RED}请使用 root 权限运行该脚本。${PLAIN}"
     exit 1
+fi
+
+usage() {
+    cat <<EOF
+用法: ./update_snell.sh [选项]
+  -y, --yes               非交互模式并默认启用优化/BBR
+      --non-interactive   非交互模式（未指定则保持默认否）
+      --optimize          启用系统优化
+      --no-optimize       禁用系统优化
+      --bbr               启用 BBR
+      --no-bbr            禁用 BBR
+      --reinit            重新生成配置（会备份）
+      --backup            仅备份现有配置
+      --stack <mode>      auto/ipv4/ipv6/dual
+      --listen <addr>     指定监听地址，如 0.0.0.0:12312 或 :::12312
+  -h, --help              显示帮助
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -y|--yes)
+            ASSUME_YES=1
+            SNELL_NONINTERACTIVE=1
+            ;;
+        --non-interactive)
+            SNELL_NONINTERACTIVE=1
+            ;;
+        --optimize)
+            ENABLE_OPTIMIZE=1
+            ;;
+        --no-optimize)
+            ENABLE_OPTIMIZE=0
+            ;;
+        --bbr)
+            ENABLE_BBR=1
+            ;;
+        --no-bbr)
+            ENABLE_BBR=0
+            ;;
+        --reinit)
+            SNELL_REINIT=1
+            ;;
+        --backup)
+            SNELL_BACKUP=1
+            ;;
+        --stack)
+            shift
+            if [ -z "$1" ]; then
+                echo -e "${RED}缺少 --stack 参数值${PLAIN}"
+                exit 1
+            fi
+            SNELL_STACK="$1"
+            ;;
+        --listen)
+            shift
+            if [ -z "$1" ]; then
+                echo -e "${RED}缺少 --listen 参数值${PLAIN}"
+                exit 1
+            fi
+            SNELL_LISTEN="$1"
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}未知参数: $1${PLAIN}"
+            usage
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+if [ "$SNELL_NONINTERACTIVE" = "1" ] && [ "$ASSUME_YES" != "1" ]; then
+    [ -z "${ENABLE_OPTIMIZE}" ] && ENABLE_OPTIMIZE=0
+    [ -z "${ENABLE_BBR}" ] && ENABLE_BBR=0
+fi
+if [ "$ASSUME_YES" = "1" ]; then
+    [ -z "${ENABLE_OPTIMIZE}" ] && ENABLE_OPTIMIZE=1
+    [ -z "${ENABLE_BBR}" ] && ENABLE_BBR=1
 fi
 
 echo -e "${YELLOW}正在检查系统环境...${PLAIN}"
@@ -114,6 +202,95 @@ detect_ipv6() {
     return 1
 }
 
+has_systemd() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    [ -d /run/systemd/system ] || return 1
+    return 0
+}
+
+EXPECTED_SHA256="${SNELL_SHA256}"
+
+load_expected_sha256() {
+    if [ -n "${EXPECTED_SHA256}" ]; then
+        return 0
+    fi
+    if [ -z "${SNELL_SHA256_URL}" ]; then
+        return 0
+    fi
+    local tmp_file=""
+    tmp_file="$(mktemp)"
+    local wget_sha_opts=(--no-check-certificate --timeout=15 --tries=5 --retry-connrefused --waitretry=2 -O "${tmp_file}")
+    if [ "${SNELL_FORCE_IPV6}" = "1" ]; then
+        wget_sha_opts=(-6 "${wget_sha_opts[@]}")
+    fi
+    if ! wget "${wget_sha_opts[@]}" "${SNELL_SHA256_URL}"; then
+        rm -f "${tmp_file}"
+        echo -e "${RED}下载 SHA256 校验文件失败。${PLAIN}"
+        return 1
+    fi
+    EXPECTED_SHA256="$(awk 'match($0, /[A-Fa-f0-9]{64}/) {print substr($0, RSTART, RLENGTH); exit}' "${tmp_file}")"
+    rm -f "${tmp_file}"
+    if [ -z "${EXPECTED_SHA256}" ]; then
+        echo -e "${RED}未能解析 SHA256 校验值。${PLAIN}"
+        return 1
+    fi
+    return 0
+}
+
+verify_sha256() {
+    local file="$1"
+    local expected="$2"
+    local actual=""
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "${file}" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "${file}" | awk '{print $1}')"
+    elif command -v openssl >/dev/null 2>&1; then
+        actual="$(openssl dgst -sha256 "${file}" | awk '{print $2}')"
+    else
+        echo -e "${RED}未找到 SHA256 校验工具。${PLAIN}"
+        return 1
+    fi
+
+    if [ "${actual}" != "${expected}" ]; then
+        echo -e "${RED}SHA256 校验失败。${PLAIN}"
+        echo -e "${YELLOW}期望: ${expected}${PLAIN}"
+        echo -e "${YELLOW}实际: ${actual}${PLAIN}"
+        return 1
+    fi
+    echo -e "${GREEN}SHA256 校验通过。${PLAIN}"
+    return 0
+}
+
+verify_sha256_if_needed() {
+    if [ -z "${SNELL_SHA256}" ] && [ -z "${SNELL_SHA256_URL}" ]; then
+        return 0
+    fi
+    if ! load_expected_sha256; then
+        return 1
+    fi
+    if [ -z "${EXPECTED_SHA256}" ]; then
+        echo -e "${RED}未能获取 SHA256 校验值。${PLAIN}"
+        return 1
+    fi
+    verify_sha256 "$1" "${EXPECTED_SHA256}"
+}
+
+backup_config() {
+    local ts=""
+    local backup_path=""
+    ts="$(date +%Y%m%d%H%M%S)"
+    backup_path="${CONF_FILE}.${ts}.bak"
+    cp -f "${CONF_FILE}" "${backup_path}"
+    echo -e "${GREEN}已备份配置到 ${backup_path}${PLAIN}"
+}
+
+HAS_SYSTEMD=0
+if has_systemd; then
+    HAS_SYSTEMD=1
+fi
+
 # 3. 准备安装/更新
 install_from_zip() {
     local zip_path="$1"
@@ -150,7 +327,7 @@ install_from_bin() {
 }
 
 # 如果服务正在运行，先停止，避免二进制文件占用导致覆盖失败
-if systemctl is-active --quiet snell; then
+if [ "${HAS_SYSTEMD}" = "1" ] && systemctl is-active --quiet snell; then
     echo -e "${YELLOW}发现正在运行的 Snell 服务，正在停止以进行更新...${PLAIN}"
     systemctl stop snell
 fi
@@ -161,6 +338,9 @@ if [ -n "${SNELL_BIN}" ]; then
         exit 1
     fi
     echo -e "${GREEN}使用本地 Snell 二进制文件安装: ${SNELL_BIN}${PLAIN}"
+    if ! verify_sha256_if_needed "${SNELL_BIN}"; then
+        exit 1
+    fi
     install_from_bin "${SNELL_BIN}"
 elif [ -n "${SNELL_ZIP}" ]; then
     if [ ! -f "${SNELL_ZIP}" ]; then
@@ -168,6 +348,9 @@ elif [ -n "${SNELL_ZIP}" ]; then
         exit 1
     fi
     echo -e "${GREEN}使用本地 Snell ZIP 文件安装: ${SNELL_ZIP}${PLAIN}"
+    if ! verify_sha256_if_needed "${SNELL_ZIP}"; then
+        exit 1
+    fi
     install_from_zip "${SNELL_ZIP}" "0"
 else
     if [ -n "${SNELL_URL}" ]; then
@@ -196,30 +379,58 @@ else
         exit 1
     fi
 
+    if ! verify_sha256_if_needed "${tmp_zip}"; then
+        rm -f "${tmp_zip}"
+        exit 1
+    fi
+
     install_from_zip "${tmp_zip}" "1"
 fi
 
 echo -e "${GREEN}Snell 核心程序安装/更新完毕。${PLAIN}"
 
 # 4. 配置文件处理逻辑
+need_init="0"
 if [ -f ${CONF_FILE} ]; then
-    echo -e "${YELLOW}检测到现有配置文件，保留现有配置...${PLAIN}"
+    if is_true "${SNELL_BACKUP}" || is_true "${SNELL_REINIT}"; then
+        backup_config
+    fi
+    if is_true "${SNELL_REINIT}"; then
+        echo -e "${YELLOW}检测到现有配置文件，按要求重建配置...${PLAIN}"
+        need_init="1"
+    else
+        echo -e "${YELLOW}检测到现有配置文件，保留现有配置...${PLAIN}"
+    fi
 else
     echo -e "${GREEN}未检测到配置，开始生成新配置...${PLAIN}"
+    need_init="1"
+fi
+
+if [ "${need_init}" = "1" ]; then
     mkdir -p ${CONF_DIR}
-    
+
     # 交互式输入端口
-    if [ -z "${SNELL_PORT}" ]; then
-        read -e -p "请输入 Snell 端口 [1-65535] (默认: 12312): " snell_port
-        [[ -z "${snell_port}" ]] && snell_port="12312"
+    if [ -n "${SNELL_LISTEN}" ]; then
+        snell_port="${SNELL_PORT:-12312}"
+    elif [ -z "${SNELL_PORT}" ]; then
+        if [ "${SNELL_NONINTERACTIVE}" = "1" ] || [ "${ASSUME_YES}" = "1" ]; then
+            snell_port="12312"
+        else
+            read -e -p "请输入 Snell 端口 [1-65535] (默认: 12312): " snell_port
+            [[ -z "${snell_port}" ]] && snell_port="12312"
+        fi
     else
         snell_port="${SNELL_PORT}"
     fi
 
     # 交互式输入混淆
     if [ -z "${SNELL_OBFS}" ]; then
-        read -e -p "请输入 obfs ( tls / http / off ) (默认: tls): " snell_obfs
-        [[ -z "${snell_obfs}" ]] && snell_obfs="tls"
+        if [ "${SNELL_NONINTERACTIVE}" = "1" ] || [ "${ASSUME_YES}" = "1" ]; then
+            snell_obfs="tls"
+        else
+            read -e -p "请输入 obfs ( tls / http / off ) (默认: tls): " snell_obfs
+            [[ -z "${snell_obfs}" ]] && snell_obfs="tls"
+        fi
     else
         snell_obfs="${SNELL_OBFS}"
     fi
@@ -323,7 +534,8 @@ fi
 
 # 5. Systemd 服务文件配置
 # 无论是否存在，都重新写入一次 Systemd 文件以确保路径正确
-cat > ${SYSTEMD_FILE} <<EOF
+if [ "${HAS_SYSTEMD}" = "1" ]; then
+    cat > ${SYSTEMD_FILE} <<EOF
 [Unit]
 Description=Snell Proxy Service
 After=network.target
@@ -338,6 +550,9 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
+else
+    echo -e "${YELLOW}未检测到 systemd，将跳过服务配置。${PLAIN}"
+fi
 
 # 6. 系统网络优化
 optimize_system() {
@@ -427,18 +642,26 @@ elif [ -z "$ENABLE_BBR" ]; then
 fi
 
 # 8. 启动服务
-echo -e "${GREEN}正在启动服务...${PLAIN}"
-systemctl daemon-reload
-systemctl enable snell
-systemctl restart snell
+if [ "${HAS_SYSTEMD}" = "1" ]; then
+    echo -e "${GREEN}正在启动服务...${PLAIN}"
+    systemctl daemon-reload
+    systemctl enable snell
+    systemctl restart snell
+else
+    echo -e "${YELLOW}未检测到 systemd，请手动启动:${PLAIN} /usr/local/bin/snell-server -c /etc/snell/snell-server.conf"
+fi
 
 # 7. 输出最终信息
 echo
 echo "================================================"
-if systemctl is-active --quiet snell; then
-    echo -e "状态: ${GREEN}已运行${PLAIN} | 版本: ${SNELL_VER}"
+if [ "${HAS_SYSTEMD}" = "1" ]; then
+    if systemctl is-active --quiet snell; then
+        echo -e "状态: ${GREEN}已运行${PLAIN} | 版本: ${SNELL_VER}"
+    else
+        echo -e "状态: ${RED}启动失败 (请检查 systemctl status snell)${PLAIN}"
+    fi
 else
-    echo -e "状态: ${RED}启动失败 (请检查 systemctl status snell)${PLAIN}"
+    echo -e "状态: ${YELLOW}未使用 systemd${PLAIN} | 版本: ${SNELL_VER}"
 fi
 echo "================================================"
 echo -e "${YELLOW}当前配置内容 /etc/snell/snell-server.conf :${PLAIN}"

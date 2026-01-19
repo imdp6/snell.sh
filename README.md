@@ -25,6 +25,8 @@ chmod +x update_snell.sh
 - `SNELL_BIN`：本地二进制路径
 - `SNELL_ZIP`：本地 ZIP 路径
 - `SNELL_FORCE_IPV6=1`：使用 IPv6 下载
+- `SNELL_SHA256`：指定文件 SHA256 校验值（用于 ZIP 或二进制）
+- `SNELL_SHA256_URL`：指定校验文件地址（自动解析 64 位哈希）
 
 配置参数（仅在首次生成配置时生效）：
 - `SNELL_PORT`：监听端口
@@ -33,23 +35,44 @@ chmod +x update_snell.sh
 - `SNELL_IPV6`：`true/false` 强制 IPv6 模式
 - `SNELL_STACK`：`auto` / `ipv4` / `ipv6` / `dual`
 - `SNELL_LISTEN`：手动指定监听地址，如 `0.0.0.0:12312` 或 `:::12312`
+- `SNELL_REINIT=1`：强制重建配置（会先备份）
+- `SNELL_BACKUP=1`：仅备份现有配置
 
 性能相关：
 - `ENABLE_OPTIMIZE=1`：应用 TCP/sysctl 优化
 - `ENABLE_BBR=1`：启用 BBR
+
+非交互：
+- `SNELL_NONINTERACTIVE=1`：禁用交互，使用默认值
+- `ASSUME_YES=1`：默认启用优化/BBR（等同 `--yes`）
+
+## 命令行参数 (update_snell.sh)
+- `-y, --yes`：非交互并默认开启优化/BBR
+- `--non-interactive`：非交互（默认关闭）
+- `--optimize / --no-optimize`：开启/关闭系统优化
+- `--bbr / --no-bbr`：开启/关闭 BBR
+- `--reinit`：重建配置（会自动备份）
+- `--backup`：仅备份配置
+- `--stack <mode>`：`auto` / `ipv4` / `ipv6` / `dual`
+- `--listen <addr>`：指定监听地址
 
 ## IPv4 / IPv6 / 双栈说明
 - 默认 `SNELL_STACK=auto`：自动检测系统是否有全局 IPv4/IPv6 地址。
 - 双栈建议使用 `SNELL_STACK=dual` 或 `SNELL_LISTEN=":::PORT"`。
 - 若 `net.ipv6.bindv6only=1`，双栈可能只会监听 IPv6，需手动改为 0。
 - 已存在 `/etc/snell/snell-server.conf` 时不会自动重写配置。
+- 未检测到 systemd 时将跳过服务配置，需手动运行 `snell-server -c /etc/snell/snell-server.conf`。
 
 ## 示例
 ```
 SNELL_PORT=443 SNELL_OBFS=off ./update_snell.sh
 SNELL_PSK=YourPSKHere SNELL_STACK=dual ./update_snell.sh
 SNELL_LISTEN=":::443" SNELL_IPV6=true ./update_snell.sh
+SNELL_SHA256=yourhashhere ./update_snell.sh
+SNELL_SHA256_URL=https://example.com/snell.sha256 ./update_snell.sh
 ENABLE_OPTIMIZE=1 ENABLE_BBR=1 ./update_snell.sh
+SNELL_REINIT=1 ./update_snell.sh
+./update_snell.sh --yes --no-bbr
 ```
 
 ## 卸载
@@ -64,6 +87,7 @@ REMOVE_TUNE=1 ./uninstall-snell.sh
 ```
 
 ## 常用命令
+说明：以下命令适用于 systemd 环境。
 运行状态：
 ```
 systemctl status snell
