@@ -58,6 +58,10 @@ wget --no-check-certificate -O uninstall-snell.sh https://raw.githubusercontent.
 chmod +x uninstall-snell.sh
 ./uninstall-snell.sh
 ```
+如需同时移除 sysctl/limits 调优文件：
+```
+REMOVE_TUNE=1 ./uninstall-snell.sh
+```
 
 ## 常用命令
 运行状态：
