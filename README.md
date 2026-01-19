@@ -13,7 +13,7 @@ Snell Server v5 一键安装/更新脚本。
 
 ## 快速开始 (Debian/Ubuntu)
 ```
-wget --no-check-certificate -O update_snell.sh https://raw.githubusercontent.com/imdp6/snell.sh/refs/heads/master/update_snell.sh
+wget --no-check-certificate -O update_snell.sh https://raw.githubusercontent.com/imdp6/snell.sh/main/update_snell.sh
 chmod +x update_snell.sh
 ./update_snell.sh
 ```
@@ -77,7 +77,7 @@ SNELL_REINIT=1 ./update_snell.sh
 
 ## 卸载
 ```
-wget --no-check-certificate -O uninstall-snell.sh https://raw.githubusercontent.com/imdp6/snell.sh/refs/heads/master/uninstall-snell.sh
+wget --no-check-certificate -O uninstall-snell.sh https://raw.githubusercontent.com/imdp6/snell.sh/main/uninstall-snell.sh
 chmod +x uninstall-snell.sh
 ./uninstall-snell.sh
 ```
