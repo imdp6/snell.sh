@@ -7,9 +7,12 @@ SNELL_VER="${SNELL_VER:-v5.0.1}"
 SNELL_ZIP="${SNELL_ZIP:-}"
 SNELL_BIN="${SNELL_BIN:-}"
 SNELL_URL="${SNELL_URL:-}"
+SNELL_CONF_VERSION="${SNELL_CONF_VERSION:-auto}"
 SNELL_FORCE_IPV6="${SNELL_FORCE_IPV6:-0}"
 SNELL_PSK="${SNELL_PSK:-}"
 SNELL_IPV6="${SNELL_IPV6:-}"
+SNELL_DNS_IP_PREFERENCE="${SNELL_DNS_IP_PREFERENCE:-}"
+SNELL_MODE="${SNELL_MODE:-}"
 SNELL_STACK="${SNELL_STACK:-auto}"
 SNELL_LISTEN="${SNELL_LISTEN:-}"
 SNELL_SHA256="${SNELL_SHA256:-}"
@@ -29,11 +32,6 @@ GREEN="\033[32m"
 YELLOW="\033[33m"
 PLAIN="\033[0m"
 
-if [ "$(id -u)" -ne 0 ]; then
-    echo -e "${RED}请使用 root 权限运行该脚本。${PLAIN}"
-    exit 1
-fi
-
 usage() {
     cat <<EOF
 用法: ./update_snell.sh [选项]
@@ -45,8 +43,15 @@ usage() {
       --no-bbr            禁用 BBR
       --reinit            重新生成配置（会备份）
       --backup            仅备份现有配置
+      --config-version <5|6>
+                          指定生成配置语法，默认自动判断
+      --dns-ip-preference <mode>
+                          Snell v6 DNS IP 偏好:
+                          default/prefer-ipv4/prefer-ipv6/ipv4-only/ipv6-only
+      --mode <mode>       Snell v6 模式:
+                          default/unshaped/unsafe-raw
       --stack <mode>      auto/ipv4/ipv6/dual
-      --listen <addr>     指定监听地址，如 0.0.0.0:12312 或 :::12312
+      --listen <addr>     指定监听地址，如 0.0.0.0:12312 或 [::]:12312
   -h, --help              显示帮助
 EOF
 }
@@ -78,6 +83,30 @@ while [ $# -gt 0 ]; do
         --backup)
             SNELL_BACKUP=1
             ;;
+        --config-version)
+            shift
+            if [ -z "$1" ]; then
+                echo -e "${RED}缺少 --config-version 参数值${PLAIN}"
+                exit 1
+            fi
+            SNELL_CONF_VERSION="$1"
+            ;;
+        --dns-ip-preference)
+            shift
+            if [ -z "$1" ]; then
+                echo -e "${RED}缺少 --dns-ip-preference 参数值${PLAIN}"
+                exit 1
+            fi
+            SNELL_DNS_IP_PREFERENCE="$1"
+            ;;
+        --mode)
+            shift
+            if [ -z "$1" ]; then
+                echo -e "${RED}缺少 --mode 参数值${PLAIN}"
+                exit 1
+            fi
+            SNELL_MODE="$1"
+            ;;
         --stack)
             shift
             if [ -z "$1" ]; then
@@ -106,6 +135,11 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}请使用 root 权限运行该脚本。${PLAIN}"
+    exit 1
+fi
 
 if [ "$SNELL_NONINTERACTIVE" = "1" ] && [ "$ASSUME_YES" != "1" ]; then
     [ -z "${ENABLE_OPTIMIZE}" ] && ENABLE_OPTIMIZE=0
@@ -163,6 +197,131 @@ is_false() {
         0|false|FALSE|no|NO|n|N) return 0 ;;
     esac
     return 1
+}
+
+detect_snell_config_major() {
+    case "${SNELL_CONF_VERSION}" in
+        6|v6|V6)
+            echo "6"
+            return
+            ;;
+        5|v5|V5)
+            echo "5"
+            return
+            ;;
+        auto|"")
+            ;;
+        *)
+            echo -e "${YELLOW}SNELL_CONF_VERSION 无效，已回退为 auto${PLAIN}" >&2
+            ;;
+    esac
+
+    case "${SNELL_VER}" in
+        v6*|V6*|6*) echo "6"; return ;;
+    esac
+    case "${SNELL_URL}" in
+        *snell-server-v6*|*snell-server-6*) echo "6"; return ;;
+    esac
+    case "${SNELL_ZIP}" in
+        *snell-server-v6*|*snell-server-6*|*v6.*|*v6-*|*v6_*) echo "6"; return ;;
+    esac
+    case "${SNELL_BIN}" in
+        *snell-server-v6*|*snell-server-6*|*v6.*|*v6-*|*v6_*) echo "6"; return ;;
+    esac
+
+    echo "5"
+}
+
+SNELL_CONFIG_MAJOR="$(detect_snell_config_major)"
+
+is_snell_v6_config() {
+    [ "${SNELL_CONFIG_MAJOR}" = "6" ]
+}
+
+normalize_dns_ip_preference() {
+    local value="$1"
+
+    case "${value}" in
+        default|prefer-ipv4|prefer-ipv6|ipv4-only|ipv6-only)
+            echo "${value}"
+            ;;
+        "")
+            echo "default"
+            ;;
+        *)
+            echo -e "${YELLOW}dns-ip-preference 输入无效，已回退为 default${PLAIN}" >&2
+            echo "default"
+            ;;
+    esac
+}
+
+normalize_snell_mode() {
+    local value="$1"
+
+    case "${value}" in
+        default|unshaped|unsafe-raw)
+            echo "${value}"
+            ;;
+        "")
+            echo "default"
+            ;;
+        *)
+            echo -e "${YELLOW}mode 输入无效，已回退为 default${PLAIN}" >&2
+            echo "default"
+            ;;
+    esac
+}
+
+choose_dns_ip_preference() {
+    local has_ipv4="$1"
+    local has_ipv6="$2"
+    local snell_ipv6="$3"
+    local snell_ipv6_forced="$4"
+
+    if [ -n "${SNELL_DNS_IP_PREFERENCE}" ]; then
+        normalize_dns_ip_preference "${SNELL_DNS_IP_PREFERENCE}"
+        return
+    fi
+
+    if [ "${snell_ipv6_forced}" = "1" ]; then
+        if [ "${snell_ipv6}" = "true" ]; then
+            echo "ipv6-only"
+        else
+            echo "ipv4-only"
+        fi
+        return
+    fi
+
+    if [ "${has_ipv6}" -eq 1 ] && [ "${has_ipv4}" -eq 0 ]; then
+        echo "ipv6-only"
+        return
+    fi
+    if [ "${has_ipv4}" -eq 1 ] && [ "${has_ipv6}" -eq 0 ]; then
+        echo "ipv4-only"
+        return
+    fi
+
+    echo "default"
+}
+
+listen_ipv6_any() {
+    local port="$1"
+
+    if is_snell_v6_config; then
+        echo "[::]:${port}"
+    else
+        echo ":::${port}"
+    fi
+}
+
+listen_dual_stack() {
+    local port="$1"
+
+    if is_snell_v6_config; then
+        echo "0.0.0.0:${port},[::]:${port}"
+    else
+        echo ":::${port}"
+    fi
 }
 
 detect_ipv4() {
@@ -388,10 +547,11 @@ else
 fi
 
 echo -e "${GREEN}Snell 核心程序安装/更新完毕。${PLAIN}"
+echo -e "${GREEN}Snell 配置语法目标: v${SNELL_CONFIG_MAJOR}${PLAIN}"
 
 # 4. 配置文件处理逻辑
 need_init="0"
-if [ -f ${CONF_FILE} ]; then
+if [ -f "${CONF_FILE}" ]; then
     if is_true "${SNELL_BACKUP}" || is_true "${SNELL_REINIT}"; then
         backup_config
     fi
@@ -407,7 +567,7 @@ else
 fi
 
 if [ "${need_init}" = "1" ]; then
-    mkdir -p ${CONF_DIR}
+    mkdir -p "${CONF_DIR}"
 
     # 交互式输入端口
     if [ -n "${SNELL_LISTEN}" ]; then
@@ -439,7 +599,7 @@ if [ "${need_init}" = "1" ]; then
     if [ -n "${SNELL_PSK}" ]; then
         PSK="${SNELL_PSK}"
     else
-        PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+        PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
     fi
 
     case "${snell_obfs}" in
@@ -464,14 +624,25 @@ if [ "${need_init}" = "1" ]; then
 
     snell_listen=""
     snell_dual="0"
+    listen_has_ipv4=0
+    listen_has_ipv6=0
     if [ -n "${SNELL_LISTEN}" ]; then
         snell_listen="${SNELL_LISTEN}"
+        case "${snell_listen}" in
+            :::*) snell_listen="$(listen_ipv6_any "${snell_listen#:::}")" ;;
+        esac
         if [ -z "${snell_ipv6}" ]; then
             case "${snell_listen}" in
-                *"::"*) snell_ipv6="true" ;;
+                *"::"*|*"["*"]"*) snell_ipv6="true" ;;
                 *) snell_ipv6="false" ;;
             esac
         fi
+        case "${snell_listen}" in
+            *"0.0.0.0:"*|*[0-9].[0-9]*.[0-9]*.[0-9]*:*) listen_has_ipv4=1 ;;
+        esac
+        case "${snell_listen}" in
+            *"::"*|*"["*"]"*) listen_has_ipv6=1 ;;
+        esac
     else
         has_ipv4=0
         has_ipv6=0
@@ -496,18 +667,26 @@ if [ "${need_init}" = "1" ]; then
         esac
 
         if [ "${has_ipv6}" -eq 1 ]; then
-            snell_listen=":::${snell_port}"
+            if [ "${has_ipv4}" -eq 1 ]; then
+                snell_listen="$(listen_dual_stack "${snell_port}")"
+            else
+                snell_listen="$(listen_ipv6_any "${snell_port}")"
+            fi
             if [ -z "${snell_ipv6}" ]; then
                 snell_ipv6="true"
             fi
             if [ "${has_ipv4}" -eq 1 ]; then
                 snell_dual="1"
             fi
+            listen_has_ipv6=1
+            listen_has_ipv4="${has_ipv4}"
         else
             snell_listen="0.0.0.0:${snell_port}"
             if [ -z "${snell_ipv6}" ]; then
                 snell_ipv6="false"
             fi
+            listen_has_ipv4=1
+            listen_has_ipv6=0
         fi
     fi
 
@@ -515,21 +694,43 @@ if [ "${need_init}" = "1" ]; then
         snell_ipv6="false"
     fi
 
-    if [ "${snell_dual}" = "1" ] && sysctl net.ipv6.bindv6only >/dev/null 2>&1; then
+    if [ "${snell_dual}" = "1" ] && ! is_snell_v6_config && sysctl net.ipv6.bindv6only >/dev/null 2>&1; then
         bindv6only="$(sysctl -n net.ipv6.bindv6only 2>/dev/null || echo "")"
         if [ "${bindv6only}" = "1" ]; then
             echo -e "${YELLOW}检测到 net.ipv6.bindv6only=1，双栈可能仅监听 IPv6，可手动改为 0${PLAIN}"
         fi
     fi
 
+    snell_dns_ip_preference="$(choose_dns_ip_preference "${listen_has_ipv4}" "${listen_has_ipv6}" "${snell_ipv6}" "${snell_ipv6_forced}")"
+    snell_mode=""
+    if is_snell_v6_config; then
+        snell_mode="$(normalize_snell_mode "${SNELL_MODE}")"
+        if [ "${snell_mode}" = "unsafe-raw" ]; then
+            echo -e "${YELLOW}警告: unsafe-raw 会禁用加密和混淆，仅应在内网或其他安全隧道内使用。${PLAIN}"
+        fi
+    elif [ -n "${SNELL_MODE}" ]; then
+        echo -e "${YELLOW}SNELL_MODE 仅适用于 Snell v6，当前 v${SNELL_CONFIG_MAJOR} 配置将忽略该选项。${PLAIN}"
+    fi
+
     # 写入配置
-    cat > ${CONF_FILE} <<EOF
+    if is_snell_v6_config; then
+        cat > "${CONF_FILE}" <<EOF
+[snell-server]
+listen = ${snell_listen}
+psk = ${PSK}
+obfs = ${snell_obfs}
+mode = ${snell_mode}
+dns-ip-preference = ${snell_dns_ip_preference}
+EOF
+    else
+        cat > "${CONF_FILE}" <<EOF
 [snell-server]
 listen = ${snell_listen}
 psk = ${PSK}
 obfs = ${snell_obfs}
 ipv6 = ${snell_ipv6}
 EOF
+    fi
 fi
 
 # 5. Systemd 服务文件配置
